@@ -1,9 +1,8 @@
 from flask import Flask, jsonify, request
 import os
-import re
 import time
-from datetime import datetime, timezone
 import requests
+from datetime import datetime, timezone
 
 app = Flask(__name__)
 
@@ -14,7 +13,7 @@ SPORTS_API_BASE = os.environ.get(
 )
 
 CONNECT_TIMEOUT = 4
-READ_TIMEOUT = 8
+READ_TIMEOUT = 10
 PAGE_LIMIT = 100
 
 session = requests.Session()
@@ -29,6 +28,7 @@ if SPORTS_API_KEY:
 # =========================================================
 
 def sportsapi_get(endpoint, params=None):
+
     if not SPORTS_API_KEY:
         raise RuntimeError("SPORTS_API_KEY não configurada")
 
@@ -49,11 +49,17 @@ def sportsapi_get(endpoint, params=None):
 # UTILIDADES
 # =========================================================
 
+def today_utc():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
 def first_value(data, keys, default=None):
+
     if not isinstance(data, dict):
         return default
 
     for key in keys:
+
         value = data.get(key)
 
         if value is not None:
@@ -62,14 +68,8 @@ def first_value(data, keys, default=None):
     return default
 
 
-def clean_text(value):
-    if value is None:
-        return ""
-
-    return str(value).strip().lower()
-
-
 def team_name(team):
+
     if isinstance(team, str):
         return team
 
@@ -89,6 +89,7 @@ def team_name(team):
 
 
 def league_name(league):
+
     if isinstance(league, str):
         return league
 
@@ -106,246 +107,71 @@ def league_name(league):
     )
 
 
-def today_utc():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
 # =========================================================
-# STATUS
+# EXTRAIR LISTA DE PARTIDAS
 # =========================================================
 
-def normalize_status(match):
+def extract_matches(data):
 
-    display = clean_text(
-        first_value(
-            match,
-            [
-                "gameTimeDisplay",
-                "gameTime",
-                "timeDisplay"
-            ],
-            ""
-        )
-    )
+    if isinstance(data, list):
+        return data
 
-    period = clean_text(
-        first_value(
-            match,
-            [
-                "period",
-                "periodName",
-                "currentPeriod"
-            ],
-            ""
-        )
-    )
+    if not isinstance(data, dict):
+        return []
 
-    raw_status = clean_text(
-        first_value(
-            match,
-            [
-                "status",
-                "gameStatus",
-                "estado"
-            ],
-            ""
-        )
-    )
-
-    # -----------------------------
-    # FINALIZADOS
-    # -----------------------------
-
-    finished_words = [
-        "fim de jogo",
-        "finalizado",
-        "finalizada",
-        "encerrado",
-        "encerrada",
-        "finished",
-        "full time",
-        "full-time",
-        "fulltime"
+    possible_keys = [
+        "matches",
+        "games",
+        "data",
+        "results"
     ]
 
-    if display in finished_words:
-        return "finished"
+    for key in possible_keys:
 
-    if raw_status in [
-        "finished",
-        "completed",
-        "complete",
-        "finalizado",
-        "finalizada"
-    ]:
-        return "finished"
+        value = data.get(key)
 
-    # -----------------------------
-    # ADIADOS
-    # -----------------------------
+        if isinstance(value, list):
+            return value
 
-    if display in [
-        "adiado",
-        "adiada",
-        "postponed"
-    ]:
-        return "postponed"
+        if isinstance(value, dict):
 
-    if raw_status in [
-        "adiado",
-        "adiada",
-        "postponed"
-    ]:
-        return "postponed"
+            for subkey in possible_keys:
 
-    # -----------------------------
-    # SUSPENSOS
-    # -----------------------------
+                subvalue = value.get(subkey)
 
-    suspended_words = [
-        "suspenso",
-        "suspensa",
-        "suspended",
-        "interrompido",
-        "interrompida",
-        "interrupted"
+                if isinstance(subvalue, list):
+                    return subvalue
+
+    return []
+
+
+def extract_total(data):
+
+    if not isinstance(data, dict):
+        return None
+
+    possible = [
+        data.get("total"),
+        data.get("count"),
+        data.get("totalCount")
     ]
 
-    if display in suspended_words:
-        return "suspended"
+    pagination = data.get("pagination")
 
-    if raw_status in suspended_words:
-        return "suspended"
+    if isinstance(pagination, dict):
+        possible.append(pagination.get("total"))
 
-    # -----------------------------
-    # CANCELADOS
-    # -----------------------------
-
-    cancelled_words = [
-        "cancelado",
-        "cancelada",
-        "cancelled",
-        "canceled"
-    ]
-
-    if display in cancelled_words:
-        return "cancelled"
-
-    if raw_status in cancelled_words:
-        return "cancelled"
-
-    # -----------------------------
-    # ABANDONADOS
-    # -----------------------------
-
-    abandoned_words = [
-        "abandonado",
-        "abandonada",
-        "abandoned"
-    ]
-
-    if display in abandoned_words:
-        return "abandoned"
-
-    if raw_status in abandoned_words:
-        return "abandoned"
-
-    # =====================================================
-    # EVIDÊNCIA FORTE DE AO VIVO PELO PERÍODO
-    # =====================================================
-
-    live_period_words = [
-        "primeiro tempo",
-        "segundo tempo",
-        "1º tempo",
-        "2º tempo",
-        "1st half",
-        "2nd half",
-        "first half",
-        "second half",
-        "intervalo",
-        "half time",
-        "halftime",
-        "extra time",
-        "prorrogação",
-        "prorrogacao"
-    ]
-
-    for word in live_period_words:
-
-        if word in period:
-            return "live"
-
-        if word in display:
-            return "live"
-
-    # =====================================================
-    # MINUTO AO VIVO
-    # Exemplos:
-    # 23'
-    # 45+2'
-    # 74
-    # =====================================================
-
-    minute_pattern = r"^\s*(\d{1,3})(?:\s*\+\s*(\d{1,2}))?\s*['’]?\s*$"
-
-    minute_match = re.match(
-        minute_pattern,
-        display
-    )
-
-    if minute_match:
+    for value in possible:
 
         try:
 
-            minute = int(
-                minute_match.group(1)
-            )
+            if value is not None:
+                return int(value)
 
-            if 1 <= minute <= 130:
-                return "live"
-
-        except Exception:
+        except (TypeError, ValueError):
             pass
 
-    # =====================================================
-    # STATUS DA PRÓPRIA API
-    # =====================================================
-
-    if raw_status in [
-        "live",
-        "ao vivo",
-        "aovivo",
-        "inprogress",
-        "in progress",
-        "playing"
-    ]:
-
-        # Status live sem minuto/período.
-        # Mantemos separado para diagnóstico.
-        return "suspect_live"
-
-    # -----------------------------
-    # AGENDADOS
-    # -----------------------------
-
-    scheduled_words = [
-        "scheduled",
-        "agendado",
-        "agendada",
-        "not started",
-        "notstarted",
-        "não iniciado",
-        "nao iniciado"
-    ]
-
-    if raw_status in scheduled_words:
-        return "scheduled"
-
-    if display in scheduled_words:
-        return "scheduled"
-
-    return "unknown"
+    return None
 
 
 # =========================================================
@@ -361,9 +187,9 @@ def normalize_match(match):
         match,
         [
             "homeTeam",
+            "home",
             "timeCasa",
-            "mandante",
-            "home"
+            "mandante"
         ],
         {}
     )
@@ -372,9 +198,9 @@ def normalize_match(match):
         match,
         [
             "awayTeam",
+            "away",
             "timeVisitante",
-            "visitante",
-            "away"
+            "visitante"
         ],
         {}
     )
@@ -383,165 +209,88 @@ def normalize_match(match):
         match,
         [
             "league",
-            "liga",
             "competition",
+            "liga",
             "competicao"
         ],
         {}
     )
 
-    match_id = first_value(
-        match,
-        [
-            "id",
-            "matchId",
-            "gameId",
-            "_id"
-        ]
-    )
-
-    display = first_value(
-        match,
-        [
-            "gameTimeDisplay",
-            "gameTime",
-            "timeDisplay"
-        ]
-    )
-
-    period = first_value(
-        match,
-        [
-            "period",
-            "periodName",
-            "currentPeriod"
-        ]
-    )
-
-    start_time = first_value(
-        match,
-        [
-            "startTime",
-            "start_time",
-            "timestamp"
-        ]
-    )
-
-    home_score = first_value(
-        match,
-        [
-            "homeScore",
-            "placarCasa",
-            "scoreHome"
-        ]
-    )
-
-    away_score = first_value(
-        match,
-        [
-            "awayScore",
-            "placarVisitante",
-            "scoreAway"
-        ]
-    )
-
     return {
-        "id": match_id,
-        "home": team_name(home),
-        "away": team_name(away),
-        "league": league_name(league),
-        "home_score": home_score,
-        "away_score": away_score,
-        "game_time": display,
-        "period": period,
-        "start_time": start_time,
-        "raw_status": first_value(
+
+        "id": first_value(
             match,
-            ["status", "gameStatus", "estado"]
+            [
+                "id",
+                "matchId",
+                "gameId",
+                "_id"
+            ]
         ),
-        "status": normalize_status(match)
+
+        "home": team_name(home),
+
+        "away": team_name(away),
+
+        "league": league_name(league),
+
+        "status": first_value(
+            match,
+            [
+                "status",
+                "gameStatus",
+                "estado"
+            ]
+        ),
+
+        "game_time": first_value(
+            match,
+            [
+                "gameTimeDisplay",
+                "gameTime",
+                "timeDisplay"
+            ]
+        ),
+
+        "start_time": first_value(
+            match,
+            [
+                "startTime",
+                "start_time",
+                "date",
+                "scheduledAt",
+                "timestamp"
+            ]
+        ),
+
+        "home_score": first_value(
+            match,
+            [
+                "homeScore",
+                "scoreHome",
+                "placarCasa"
+            ]
+        ),
+
+        "away_score": first_value(
+            match,
+            [
+                "awayScore",
+                "scoreAway",
+                "placarVisitante"
+            ]
+        )
     }
 
 
 # =========================================================
-# EXTRAÇÃO
+# BUSCAR PRÉ-JOGOS
 # =========================================================
 
-def extract_matches(data):
+def fetch_upcoming(date=None, offset=0):
 
-    if isinstance(data, list):
-        return data
-
-    if not isinstance(data, dict):
-        return []
-
-    for key in [
-        "matches",
-        "games",
-        "data",
-        "results"
-    ]:
-
-        value = data.get(key)
-
-        if isinstance(value, list):
-            return value
-
-        if isinstance(value, dict):
-
-            for subkey in [
-                "matches",
-                "games",
-                "data",
-                "results"
-            ]:
-
-                subvalue = value.get(subkey)
-
-                if isinstance(subvalue, list):
-                    return subvalue
-
-    return []
-
-
-def extract_total(data):
-
-    if not isinstance(data, dict):
-        return None
-
-    values = [
-        data.get("total"),
-        data.get("count"),
-        data.get("totalCount")
-    ]
-
-    pagination = data.get("pagination")
-
-    if isinstance(pagination, dict):
-        values.append(
-            pagination.get("total")
-        )
-
-    for value in values:
-
-        try:
-
-            if value is not None:
-                return int(value)
-
-        except (TypeError, ValueError):
-            pass
-
-    return None
-
-
-# =========================================================
-# CONSULTA NOVA V2.4
-# =========================================================
-
-def fetch_live_today(offset=0):
-
-    date = today_utc()
+    if not date:
+        date = today_utc()
 
     started = time.monotonic()
 
@@ -550,7 +299,7 @@ def fetch_live_today(offset=0):
         {
             "sport": "football",
             "date": date,
-            "status": "live",
+            "status": "scheduled",
             "limit": PAGE_LIMIT,
             "offset": offset
         }
@@ -563,34 +312,18 @@ def fetch_live_today(offset=0):
 
     raw_matches = extract_matches(data)
 
-    buckets = {
-        "live": [],
-        "suspect_live": [],
-        "finished": [],
-        "postponed": [],
-        "suspended": [],
-        "cancelled": [],
-        "abandoned": [],
-        "scheduled": [],
-        "unknown": []
-    }
+    matches = []
 
     for raw in raw_matches:
 
         match = normalize_match(raw)
 
-        if not match:
-            continue
-
-        status = match["status"]
-
-        if status not in buckets:
-            status = "unknown"
-
-        buckets[status].append(match)
+        if match:
+            matches.append(match)
 
     return {
-        "date_utc": date,
+
+        "date": date,
 
         "offset": offset,
 
@@ -600,55 +333,14 @@ def fetch_live_today(offset=0):
 
         "source_total": extract_total(data),
 
-        "real_live_total":
-            len(buckets["live"]),
+        "matches": matches,
 
-        "suspect_live_total":
-            len(buckets["suspect_live"]),
-
-        "finished_total":
-            len(buckets["finished"]),
-
-        "postponed_total":
-            len(buckets["postponed"]),
-
-        "suspended_total":
-            len(buckets["suspended"]),
-
-        "cancelled_total":
-            len(buckets["cancelled"]),
-
-        "abandoned_total":
-            len(buckets["abandoned"]),
-
-        "scheduled_total":
-            len(buckets["scheduled"]),
-
-        "unknown_total":
-            len(buckets["unknown"]),
-
-        "matches":
-            buckets["live"],
-
-        "suspect_matches":
-            buckets["suspect_live"],
-
-        "unknown_matches":
-            buckets["unknown"],
-
-        "postponed_matches":
-            buckets["postponed"],
-
-        "suspended_matches":
-            buckets["suspended"],
-
-        "elapsed_seconds":
-            elapsed
+        "elapsed_seconds": elapsed
     }
 
 
 # =========================================================
-# ROTAS
+# HOME
 # =========================================================
 
 @app.route("/")
@@ -656,15 +348,19 @@ def home():
 
     return jsonify({
         "bot": "BetScope Bot",
-        "status": "online",
-        "version": "2.4",
+        "mode": "pre-match",
         "sports_api_key":
             "configurada"
             if SPORTS_API_KEY
             else "não configurada",
-        "date_utc": today_utc()
+        "status": "online",
+        "version": "2.5"
     })
 
+
+# =========================================================
+# HEALTH
+# =========================================================
 
 @app.route("/health")
 def health():
@@ -672,77 +368,58 @@ def health():
     return jsonify({
         "bot": "BetScope Bot",
         "status": "ok",
-        "version": "2.4"
+        "version": "2.5"
     })
 
 
 # =========================================================
-# LIVE PRINCIPAL
+# JOGOS PRÉ-JOGO
+#
+# Exemplos:
+#
+# /api/upcoming
+#
+# /api/upcoming?date=2026-09-07
+#
+# /api/upcoming?date=2026-09-07&offset=100
 # =========================================================
 
-@app.route("/api/live")
-def live_games():
+@app.route("/api/upcoming")
+def upcoming():
 
     try:
 
-        result = fetch_live_today(0)
-
-        return jsonify({
-            "status": "ok",
-            **result,
-            "timestamp":
-                int(time.time() * 1000)
-        })
-
-    except requests.exceptions.Timeout:
-
-        return jsonify({
-            "status": "timeout",
-            "error":
-                "SportsAPI não respondeu dentro de 8 segundos."
-        }), 200
-
-    except requests.exceptions.HTTPError as error:
-
-        api_status = (
-            error.response.status_code
-            if error.response is not None
-            else None
-        )
-
-        return jsonify({
-            "status": "sports_api_error",
-            "sports_api_status": api_status,
-            "error":
-                "Erro ao consultar jogos ao vivo."
-        }), 200
-
-    except Exception as error:
-
-        return jsonify({
-            "status": "error",
-            "error": str(error)
-        }), 200
-
-
-# =========================================================
-# DEBUG LIVE
-# =========================================================
-
-@app.route("/api/debug/live")
-def debug_live():
-
-    try:
-
-        offset_text = request.args.get(
-            "offset",
-            "0"
+        date = request.args.get(
+            "date",
+            today_utc()
         )
 
         try:
-            offset = int(offset_text)
+
+            datetime.strptime(
+                date,
+                "%Y-%m-%d"
+            )
 
         except ValueError:
+
+            return jsonify({
+                "status": "error",
+                "error":
+                    "Data inválida. Use YYYY-MM-DD."
+            }), 200
+
+        try:
+
+            offset = int(
+                request.args.get(
+                    "offset",
+                    "0"
+                )
+            )
+
+        except ValueError:
+
             offset = 0
 
         if offset < 0:
@@ -752,7 +429,10 @@ def debug_live():
             offset // PAGE_LIMIT
         ) * PAGE_LIMIT
 
-        result = fetch_live_today(offset)
+        result = fetch_upcoming(
+            date=date,
+            offset=offset
+        )
 
         next_offset = (
             offset + PAGE_LIMIT
@@ -787,7 +467,7 @@ def debug_live():
         return jsonify({
             "status": "timeout",
             "error":
-                "SportsAPI não respondeu dentro de 8 segundos."
+                "SportsAPI não respondeu dentro de 10 segundos."
         }), 200
 
     except requests.exceptions.HTTPError as error:
@@ -800,8 +480,10 @@ def debug_live():
 
         return jsonify({
             "status": "sports_api_error",
-            "sports_api_status": api_status,
-            "error": str(error)
+            "sports_api_status":
+                api_status,
+            "error":
+                "Erro ao consultar partidas pré-jogo."
         }), 200
 
     except Exception as error:
@@ -813,7 +495,7 @@ def debug_live():
 
 
 # =========================================================
-# DETALHES DA PARTIDA
+# DADOS BRUTOS DE UMA PARTIDA
 # =========================================================
 
 @app.route("/api/match/<match_id>")
@@ -828,7 +510,11 @@ def match_details(match_id):
             }
         )
 
-        return jsonify(data)
+        return jsonify({
+            "status": "ok",
+            "match_id": match_id,
+            "data": data
+        })
 
     except requests.exceptions.Timeout:
 
@@ -848,7 +534,8 @@ def match_details(match_id):
 
         return jsonify({
             "status": "sports_api_error",
-            "sports_api_status": api_status,
+            "sports_api_status":
+                api_status,
             "error":
                 "Erro ao consultar detalhes da partida."
         }), 200
