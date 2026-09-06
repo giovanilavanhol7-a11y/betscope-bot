@@ -17,15 +17,9 @@ SPORTS_API_BASE = os.environ.get(
     "https://sportsapi.com.br/api/v1"
 )
 
-# Não podemos deixar a SportsAPI prender o worker do Render.
 CONNECT_TIMEOUT = 4
 READ_TIMEOUT = 8
-
 PAGE_LIMIT = 100
-
-# ============================================================
-# SESSÃO HTTP
-# ============================================================
 
 session = requests.Session()
 
@@ -73,7 +67,7 @@ def sportsapi_get(endpoint, params=None):
 
 
 # ============================================================
-# FUNÇÕES AUXILIARES
+# AUXILIARES
 # ============================================================
 
 def first_value(data, keys, default=None):
@@ -82,13 +76,10 @@ def first_value(data, keys, default=None):
         return default
 
     for key in keys:
+        value = data.get(key)
 
-        if key in data:
-
-            value = data.get(key)
-
-            if value is not None:
-                return value
+        if value is not None:
+            return value
 
     return default
 
@@ -132,13 +123,21 @@ def league_name(league):
     )
 
 
+def clean_text(value):
+
+    if value is None:
+        return ""
+
+    return str(value).strip().lower()
+
+
 # ============================================================
-# STATUS
+# NORMALIZAÇÃO DO STATUS
 # ============================================================
 
 def normalize_status(match):
 
-    display = str(
+    display = clean_text(
         first_value(
             match,
             [
@@ -152,9 +151,9 @@ def normalize_status(match):
             ],
             ""
         )
-    ).strip().lower()
+    )
 
-    status = str(
+    raw_status = clean_text(
         first_value(
             match,
             [
@@ -164,13 +163,13 @@ def normalize_status(match):
             ],
             ""
         )
-    ).strip().lower()
+    )
 
-    # --------------------------------------------------------
-    # ENCERRADO
-    # --------------------------------------------------------
+    # ========================================================
+    # 1. ENCERRADOS
+    # ========================================================
 
-    finished_exact = {
+    finished_words = [
         "fim de jogo",
         "finalizado",
         "finalizada",
@@ -179,122 +178,189 @@ def normalize_status(match):
         "finished",
         "full time",
         "full-time",
-        "ft"
-    }
+        "fulltime"
+    ]
 
-    if display in finished_exact:
+    if display in finished_words:
         return "finished"
 
-    if status in {
+    if raw_status in [
         "finished",
         "finalizado",
         "finalizada",
-        "complete",
-        "completed"
-    }:
+        "completed",
+        "complete"
+    ]:
         return "finished"
 
-    # --------------------------------------------------------
-    # CANCELADO
-    # --------------------------------------------------------
+    # ========================================================
+    # 2. ADIADOS
+    # ========================================================
 
-    if status in {
-        "cancelled",
-        "canceled",
-        "cancelado",
-        "cancelada"
-    }:
-        return "cancelled"
-
-    # --------------------------------------------------------
-    # ADIADO
-    # --------------------------------------------------------
-
-    if status in {
-        "postponed",
+    postponed_words = [
         "adiado",
-        "adiada"
-    }:
+        "adiada",
+        "postponed"
+    ]
+
+    if display in postponed_words:
         return "postponed"
 
-    # --------------------------------------------------------
-    # AGENDADO
-    # --------------------------------------------------------
+    if raw_status in postponed_words:
+        return "postponed"
 
-    if status in {
-        "scheduled",
+    # ========================================================
+    # 3. SUSPENSOS
+    # ========================================================
+
+    suspended_words = [
+        "suspenso",
+        "suspensa",
+        "suspended",
+        "interrompido",
+        "interrompida",
+        "interrupted"
+    ]
+
+    if display in suspended_words:
+        return "suspended"
+
+    if raw_status in suspended_words:
+        return "suspended"
+
+    # ========================================================
+    # 4. CANCELADOS
+    # ========================================================
+
+    cancelled_words = [
+        "cancelado",
+        "cancelada",
+        "cancelled",
+        "canceled"
+    ]
+
+    if display in cancelled_words:
+        return "cancelled"
+
+    if raw_status in cancelled_words:
+        return "cancelled"
+
+    # ========================================================
+    # 5. ABANDONADOS
+    # ========================================================
+
+    abandoned_words = [
+        "abandonado",
+        "abandonada",
+        "abandoned"
+    ]
+
+    if display in abandoned_words:
+        return "abandoned"
+
+    if raw_status in abandoned_words:
+        return "abandoned"
+
+    # ========================================================
+    # 6. AGENDADOS
+    # ========================================================
+
+    scheduled_words = [
         "agendado",
         "agendada",
+        "scheduled",
         "not started",
-        "notstarted"
-    }:
+        "notstarted",
+        "não iniciado",
+        "nao iniciado"
+    ]
+
+    if display in scheduled_words:
         return "scheduled"
 
-    # --------------------------------------------------------
-    # INTERVALO
-    # --------------------------------------------------------
+    if raw_status in scheduled_words:
+        return "scheduled"
 
-    live_texts = [
+    # ========================================================
+    # 7. INTERVALO / PERÍODO DE JOGO
+    # ========================================================
+
+    live_period_words = [
         "intervalo",
         "half time",
         "halftime",
         "1º tempo",
         "2º tempo",
         "primeiro tempo",
-        "segundo tempo"
+        "segundo tempo",
+        "first half",
+        "second half"
     ]
 
-    for text in live_texts:
+    for word in live_period_words:
 
-        if text in display:
+        if word in display:
             return "live"
 
-    # --------------------------------------------------------
-    # MINUTO DE JOGO
-    # --------------------------------------------------------
+    # ========================================================
+    # 8. MINUTO REAL
+    # ========================================================
 
-    # Exemplos:
+    # Exemplos aceitos:
+    # 1'
     # 23'
     # 45'
-    # 45+3'
+    # 45+2'
+    # 67
     # 90+5
 
-    minute_pattern = r"^\s*\d{1,3}(?:\s*\+\s*\d{1,2})?\s*['’]?\s*$"
+    minute_pattern = (
+        r"^\s*"
+        r"(\d{1,3})"
+        r"(?:\s*\+\s*(\d{1,2}))?"
+        r"\s*['’]?"
+        r"\s*$"
+    )
 
-    if re.match(minute_pattern, display):
+    minute_match = re.match(
+        minute_pattern,
+        display
+    )
+
+    if minute_match:
 
         try:
 
             base_minute = int(
-                re.match(r"\d{1,3}", display).group()
+                minute_match.group(1)
             )
 
-            # Evita valores absurdos do feed.
             if 0 <= base_minute <= 130:
                 return "live"
 
         except Exception:
             pass
 
-    # --------------------------------------------------------
-    # STATUS LIVE DA FONTE
-    # --------------------------------------------------------
+    # ========================================================
+    # 9. STATUS "LIVE" SEM PROVA
+    # ========================================================
 
-    if status in {
+    live_source_statuses = [
         "live",
         "ao vivo",
         "aovivo",
         "inprogress",
         "in progress",
         "playing"
-    }:
+    ]
 
-        # Não confiamos cegamente no status "live".
-        # A fonte já marcou partidas encerradas como live.
+    if raw_status in live_source_statuses:
 
-        if display and display not in finished_exact:
-            return "live"
-
+        # IMPORTANTE:
+        # Não classificamos como LIVE apenas porque
+        # a SportsAPI escreveu status=live.
+        #
+        # Precisamos de minuto, intervalo ou período.
         return "suspect_live"
 
     return "unknown"
@@ -396,7 +462,7 @@ def normalize_match(match):
 
 
 # ============================================================
-# EXTRAIR PARTIDAS
+# EXTRAÇÃO
 # ============================================================
 
 def extract_matches(data):
@@ -438,7 +504,7 @@ def extract_total(data):
     if not isinstance(data, dict):
         return None
 
-    possible_values = [
+    values = [
         data.get("total"),
         data.get("count"),
         data.get("totalCount")
@@ -447,20 +513,19 @@ def extract_total(data):
     pagination = data.get("pagination")
 
     if isinstance(pagination, dict):
-        possible_values.append(
+        values.append(
             pagination.get("total")
         )
 
-    for value in possible_values:
-
-        if value is None:
-            continue
+    for value in values:
 
         try:
-            return int(value)
+
+            if value is not None:
+                return int(value)
 
         except (TypeError, ValueError):
-            continue
+            pass
 
     return None
 
@@ -490,44 +555,79 @@ def fetch_live_page(offset=0):
 
     raw_matches = extract_matches(data)
 
-    real_live = []
-    suspect_live = []
-    finished = []
-    unknown = []
+    buckets = {
+        "live": [],
+        "suspect_live": [],
+        "finished": [],
+        "postponed": [],
+        "suspended": [],
+        "cancelled": [],
+        "abandoned": [],
+        "scheduled": [],
+        "unknown": []
+    }
 
-    for raw_match in raw_matches:
+    for raw in raw_matches:
 
-        match = normalize_match(raw_match)
+        match = normalize_match(raw)
 
         if not match:
             continue
 
         status = match["status"]
 
-        if status == "live":
-            real_live.append(match)
+        if status not in buckets:
+            status = "unknown"
 
-        elif status == "suspect_live":
-            suspect_live.append(match)
-
-        elif status == "finished":
-            finished.append(match)
-
-        else:
-            unknown.append(match)
+        buckets[status].append(match)
 
     return {
         "offset": offset,
         "limit": PAGE_LIMIT,
         "received": len(raw_matches),
         "source_total": extract_total(data),
-        "real_live_total": len(real_live),
-        "suspect_live_total": len(suspect_live),
-        "finished_total": len(finished),
-        "unknown_total": len(unknown),
-        "matches": real_live,
-        "suspect_matches": suspect_live,
-        "elapsed_seconds": elapsed
+
+        "real_live_total":
+            len(buckets["live"]),
+
+        "suspect_live_total":
+            len(buckets["suspect_live"]),
+
+        "finished_total":
+            len(buckets["finished"]),
+
+        "postponed_total":
+            len(buckets["postponed"]),
+
+        "suspended_total":
+            len(buckets["suspended"]),
+
+        "cancelled_total":
+            len(buckets["cancelled"]),
+
+        "abandoned_total":
+            len(buckets["abandoned"]),
+
+        "scheduled_total":
+            len(buckets["scheduled"]),
+
+        "unknown_total":
+            len(buckets["unknown"]),
+
+        "matches":
+            buckets["live"],
+
+        "suspect_matches":
+            buckets["suspect_live"],
+
+        "postponed_matches":
+            buckets["postponed"],
+
+        "suspended_matches":
+            buckets["suspended"],
+
+        "elapsed_seconds":
+            elapsed
     }
 
 
@@ -541,7 +641,7 @@ def home():
     return jsonify({
         "bot": "BetScope Bot",
         "status": "online",
-        "version": "2.2",
+        "version": "2.3",
         "sports_api_key":
             "configurada"
             if SPORTS_API_KEY
@@ -559,7 +659,7 @@ def health():
     return jsonify({
         "bot": "BetScope Bot",
         "status": "ok",
-        "version": "2.2"
+        "version": "2.3"
     })
 
 
@@ -577,29 +677,39 @@ def live_games():
         result = fetch_live_page(0)
 
         live_cache = {
-            "matches": result["matches"],
-            "timestamp": int(time.time() * 1000),
-            "offset": 0
+            "matches":
+                result["matches"],
+
+            "timestamp":
+                int(time.time() * 1000),
+
+            "offset":
+                0
         }
 
         return jsonify({
             "cached": False,
             **result,
-            "timestamp": int(time.time() * 1000)
+            "timestamp":
+                int(time.time() * 1000)
         })
 
     except requests.exceptions.Timeout:
 
         return jsonify({
             "cached": True,
-            "error": "SportsAPI demorou para responder",
-            "matches": live_cache["matches"],
-            "cache_timestamp": live_cache["timestamp"]
+            "status": "timeout",
+            "error":
+                "SportsAPI não respondeu dentro do limite.",
+            "matches":
+                live_cache["matches"],
+            "cache_timestamp":
+                live_cache["timestamp"]
         }), 200
 
     except requests.exceptions.HTTPError as error:
 
-        status = (
+        api_status = (
             error.response.status_code
             if error.response is not None
             else None
@@ -607,24 +717,28 @@ def live_games():
 
         return jsonify({
             "cached": True,
-            "error": "SportsAPI retornou erro HTTP",
-            "sports_api_status": status,
-            "matches": live_cache["matches"],
-            "cache_timestamp": live_cache["timestamp"]
+            "status": "sports_api_error",
+            "sports_api_status":
+                api_status,
+            "matches":
+                live_cache["matches"],
+            "cache_timestamp":
+                live_cache["timestamp"]
         }), 200
 
     except Exception as error:
 
         return jsonify({
             "cached": True,
+            "status": "error",
             "error": str(error),
-            "matches": live_cache["matches"],
-            "cache_timestamp": live_cache["timestamp"]
+            "matches":
+                live_cache["matches"]
         }), 200
 
 
 # ============================================================
-# DEBUG POR PÁGINA
+# DEBUG
 # ============================================================
 
 @app.route("/api/debug/live")
@@ -646,14 +760,15 @@ def debug_live():
         if offset < 0:
             offset = 0
 
-        # Mantém offset em múltiplos de 100.
         offset = (
             offset // PAGE_LIMIT
         ) * PAGE_LIMIT
 
         result = fetch_live_page(offset)
 
-        next_offset = offset + PAGE_LIMIT
+        next_offset = (
+            offset + PAGE_LIMIT
+        )
 
         source_total = result.get(
             "source_total"
@@ -695,9 +810,14 @@ def debug_live():
         )
 
         return jsonify({
-            "status": "sports_api_error",
-            "sports_api_status": api_status,
-            "error": str(error)
+            "status":
+                "sports_api_error",
+
+            "sports_api_status":
+                api_status,
+
+            "error":
+                str(error)
         }), 200
 
     except Exception as error:
@@ -729,8 +849,9 @@ def match_details(match_id):
     except requests.exceptions.Timeout:
 
         return jsonify({
+            "status": "timeout",
             "error":
-                "SportsAPI demorou para responder aos detalhes da partida."
+                "SportsAPI demorou para responder aos detalhes."
         }), 200
 
     except requests.exceptions.HTTPError as error:
@@ -742,14 +863,20 @@ def match_details(match_id):
         )
 
         return jsonify({
+            "status":
+                "sports_api_error",
+
+            "sports_api_status":
+                api_status,
+
             "error":
-                "SportsAPI retornou erro ao consultar a partida.",
-            "sports_api_status": api_status
+                "Erro ao consultar detalhes da partida."
         }), 200
 
     except Exception as error:
 
         return jsonify({
+            "status": "error",
             "error": str(error)
         }), 200
 
