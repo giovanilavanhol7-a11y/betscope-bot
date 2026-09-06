@@ -2,16 +2,12 @@ from flask import Flask, jsonify, request
 import os
 import re
 import time
+from datetime import datetime, timezone
 import requests
 
 app = Flask(__name__)
 
-# ============================================================
-# CONFIGURAÇÃO
-# ============================================================
-
 SPORTS_API_KEY = os.environ.get("SPORTS_API_KEY")
-
 SPORTS_API_BASE = os.environ.get(
     "SPORTS_API_URL",
     "https://sportsapi.com.br/api/v1"
@@ -22,34 +18,17 @@ READ_TIMEOUT = 8
 PAGE_LIMIT = 100
 
 session = requests.Session()
-
-session.headers.update({
-    "Accept": "application/json"
-})
+session.headers.update({"Accept": "application/json"})
 
 if SPORTS_API_KEY:
-    session.headers.update({
-        "X-API-Key": SPORTS_API_KEY
-    })
+    session.headers.update({"X-API-Key": SPORTS_API_KEY})
 
 
-# ============================================================
-# CACHE
-# ============================================================
-
-live_cache = {
-    "matches": [],
-    "timestamp": 0,
-    "offset": None
-}
-
-
-# ============================================================
-# SPORTSAPI
-# ============================================================
+# =========================================================
+# SPORTS API
+# =========================================================
 
 def sportsapi_get(endpoint, params=None):
-
     if not SPORTS_API_KEY:
         raise RuntimeError("SPORTS_API_KEY não configurada")
 
@@ -66,12 +45,11 @@ def sportsapi_get(endpoint, params=None):
     return response.json()
 
 
-# ============================================================
-# AUXILIARES
-# ============================================================
+# =========================================================
+# UTILIDADES
+# =========================================================
 
 def first_value(data, keys, default=None):
-
     if not isinstance(data, dict):
         return default
 
@@ -84,8 +62,14 @@ def first_value(data, keys, default=None):
     return default
 
 
-def team_name(team):
+def clean_text(value):
+    if value is None:
+        return ""
 
+    return str(value).strip().lower()
+
+
+def team_name(team):
     if isinstance(team, str):
         return team
 
@@ -105,7 +89,6 @@ def team_name(team):
 
 
 def league_name(league):
-
     if isinstance(league, str):
         return league
 
@@ -123,17 +106,13 @@ def league_name(league):
     )
 
 
-def clean_text(value):
-
-    if value is None:
-        return ""
-
-    return str(value).strip().lower()
+def today_utc():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-# ============================================================
-# NORMALIZAÇÃO DO STATUS
-# ============================================================
+# =========================================================
+# STATUS
+# =========================================================
 
 def normalize_status(match):
 
@@ -142,12 +121,20 @@ def normalize_status(match):
             match,
             [
                 "gameTimeDisplay",
-                "exibiçãoHorárioDoJogo",
-                "exibiçãoHorárioDeJogo",
-                "exibicaoHorarioDoJogo",
-                "exibicaoHorarioDeJogo",
                 "gameTime",
                 "timeDisplay"
+            ],
+            ""
+        )
+    )
+
+    period = clean_text(
+        first_value(
+            match,
+            [
+                "period",
+                "periodName",
+                "currentPeriod"
             ],
             ""
         )
@@ -158,16 +145,16 @@ def normalize_status(match):
             match,
             [
                 "status",
-                "estado",
-                "gameStatus"
+                "gameStatus",
+                "estado"
             ],
             ""
         )
     )
 
-    # ========================================================
-    # 1. ENCERRADOS
-    # ========================================================
+    # -----------------------------
+    # FINALIZADOS
+    # -----------------------------
 
     finished_words = [
         "fim de jogo",
@@ -186,32 +173,34 @@ def normalize_status(match):
 
     if raw_status in [
         "finished",
-        "finalizado",
-        "finalizada",
         "completed",
-        "complete"
+        "complete",
+        "finalizado",
+        "finalizada"
     ]:
         return "finished"
 
-    # ========================================================
-    # 2. ADIADOS
-    # ========================================================
+    # -----------------------------
+    # ADIADOS
+    # -----------------------------
 
-    postponed_words = [
+    if display in [
         "adiado",
         "adiada",
         "postponed"
-    ]
-
-    if display in postponed_words:
+    ]:
         return "postponed"
 
-    if raw_status in postponed_words:
+    if raw_status in [
+        "adiado",
+        "adiada",
+        "postponed"
+    ]:
         return "postponed"
 
-    # ========================================================
-    # 3. SUSPENSOS
-    # ========================================================
+    # -----------------------------
+    # SUSPENSOS
+    # -----------------------------
 
     suspended_words = [
         "suspenso",
@@ -228,9 +217,9 @@ def normalize_status(match):
     if raw_status in suspended_words:
         return "suspended"
 
-    # ========================================================
-    # 4. CANCELADOS
-    # ========================================================
+    # -----------------------------
+    # CANCELADOS
+    # -----------------------------
 
     cancelled_words = [
         "cancelado",
@@ -245,9 +234,9 @@ def normalize_status(match):
     if raw_status in cancelled_words:
         return "cancelled"
 
-    # ========================================================
-    # 5. ABANDONADOS
-    # ========================================================
+    # -----------------------------
+    # ABANDONADOS
+    # -----------------------------
 
     abandoned_words = [
         "abandonado",
@@ -261,66 +250,44 @@ def normalize_status(match):
     if raw_status in abandoned_words:
         return "abandoned"
 
-    # ========================================================
-    # 6. AGENDADOS
-    # ========================================================
-
-    scheduled_words = [
-        "agendado",
-        "agendada",
-        "scheduled",
-        "not started",
-        "notstarted",
-        "não iniciado",
-        "nao iniciado"
-    ]
-
-    if display in scheduled_words:
-        return "scheduled"
-
-    if raw_status in scheduled_words:
-        return "scheduled"
-
-    # ========================================================
-    # 7. INTERVALO / PERÍODO DE JOGO
-    # ========================================================
+    # =====================================================
+    # EVIDÊNCIA FORTE DE AO VIVO PELO PERÍODO
+    # =====================================================
 
     live_period_words = [
+        "primeiro tempo",
+        "segundo tempo",
+        "1º tempo",
+        "2º tempo",
+        "1st half",
+        "2nd half",
+        "first half",
+        "second half",
         "intervalo",
         "half time",
         "halftime",
-        "1º tempo",
-        "2º tempo",
-        "primeiro tempo",
-        "segundo tempo",
-        "first half",
-        "second half"
+        "extra time",
+        "prorrogação",
+        "prorrogacao"
     ]
 
     for word in live_period_words:
 
+        if word in period:
+            return "live"
+
         if word in display:
             return "live"
 
-    # ========================================================
-    # 8. MINUTO REAL
-    # ========================================================
-
-    # Exemplos aceitos:
-    # 1'
+    # =====================================================
+    # MINUTO AO VIVO
+    # Exemplos:
     # 23'
-    # 45'
     # 45+2'
-    # 67
-    # 90+5
+    # 74
+    # =====================================================
 
-    minute_pattern = (
-        r"^\s*"
-        r"(\d{1,3})"
-        r"(?:\s*\+\s*(\d{1,2}))?"
-        r"\s*['’]?"
-        r"\s*$"
-    )
+    minute_pattern = r"^\s*(\d{1,3})(?:\s*\+\s*(\d{1,2}))?\s*['’]?\s*$"
 
     minute_match = re.match(
         minute_pattern,
@@ -331,44 +298,59 @@ def normalize_status(match):
 
         try:
 
-            base_minute = int(
+            minute = int(
                 minute_match.group(1)
             )
 
-            if 0 <= base_minute <= 130:
+            if 1 <= minute <= 130:
                 return "live"
 
         except Exception:
             pass
 
-    # ========================================================
-    # 9. STATUS "LIVE" SEM PROVA
-    # ========================================================
+    # =====================================================
+    # STATUS DA PRÓPRIA API
+    # =====================================================
 
-    live_source_statuses = [
+    if raw_status in [
         "live",
         "ao vivo",
         "aovivo",
         "inprogress",
         "in progress",
         "playing"
+    ]:
+
+        # Status live sem minuto/período.
+        # Mantemos separado para diagnóstico.
+        return "suspect_live"
+
+    # -----------------------------
+    # AGENDADOS
+    # -----------------------------
+
+    scheduled_words = [
+        "scheduled",
+        "agendado",
+        "agendada",
+        "not started",
+        "notstarted",
+        "não iniciado",
+        "nao iniciado"
     ]
 
-    if raw_status in live_source_statuses:
+    if raw_status in scheduled_words:
+        return "scheduled"
 
-        # IMPORTANTE:
-        # Não classificamos como LIVE apenas porque
-        # a SportsAPI escreveu status=live.
-        #
-        # Precisamos de minuto, intervalo ou período.
-        return "suspect_live"
+    if display in scheduled_words:
+        return "scheduled"
 
     return "unknown"
 
 
-# ============================================================
+# =========================================================
 # NORMALIZAR PARTIDA
-# ============================================================
+# =========================================================
 
 def normalize_match(match):
 
@@ -422,12 +404,26 @@ def normalize_match(match):
         match,
         [
             "gameTimeDisplay",
-            "exibiçãoHorárioDoJogo",
-            "exibiçãoHorárioDeJogo",
-            "exibicaoHorarioDoJogo",
-            "exibicaoHorarioDeJogo",
             "gameTime",
             "timeDisplay"
+        ]
+    )
+
+    period = first_value(
+        match,
+        [
+            "period",
+            "periodName",
+            "currentPeriod"
+        ]
+    )
+
+    start_time = first_value(
+        match,
+        [
+            "startTime",
+            "start_time",
+            "timestamp"
         ]
     )
 
@@ -457,13 +453,19 @@ def normalize_match(match):
         "home_score": home_score,
         "away_score": away_score,
         "game_time": display,
+        "period": period,
+        "start_time": start_time,
+        "raw_status": first_value(
+            match,
+            ["status", "gameStatus", "estado"]
+        ),
         "status": normalize_status(match)
     }
 
 
-# ============================================================
+# =========================================================
 # EXTRAÇÃO
-# ============================================================
+# =========================================================
 
 def extract_matches(data):
 
@@ -473,14 +475,12 @@ def extract_matches(data):
     if not isinstance(data, dict):
         return []
 
-    possible_keys = [
+    for key in [
         "matches",
         "games",
         "data",
         "results"
-    ]
-
-    for key in possible_keys:
+    ]:
 
         value = data.get(key)
 
@@ -489,7 +489,12 @@ def extract_matches(data):
 
         if isinstance(value, dict):
 
-            for subkey in possible_keys:
+            for subkey in [
+                "matches",
+                "games",
+                "data",
+                "results"
+            ]:
 
                 subvalue = value.get(subkey)
 
@@ -530,11 +535,13 @@ def extract_total(data):
     return None
 
 
-# ============================================================
-# CONSULTAR UMA PÁGINA
-# ============================================================
+# =========================================================
+# CONSULTA NOVA V2.4
+# =========================================================
 
-def fetch_live_page(offset=0):
+def fetch_live_today(offset=0):
+
+    date = today_utc()
 
     started = time.monotonic()
 
@@ -542,6 +549,7 @@ def fetch_live_page(offset=0):
         "/games",
         {
             "sport": "football",
+            "date": date,
             "status": "live",
             "limit": PAGE_LIMIT,
             "offset": offset
@@ -582,9 +590,14 @@ def fetch_live_page(offset=0):
         buckets[status].append(match)
 
     return {
+        "date_utc": date,
+
         "offset": offset,
+
         "limit": PAGE_LIMIT,
+
         "received": len(raw_matches),
+
         "source_total": extract_total(data),
 
         "real_live_total":
@@ -620,6 +633,9 @@ def fetch_live_page(offset=0):
         "suspect_matches":
             buckets["suspect_live"],
 
+        "unknown_matches":
+            buckets["unknown"],
+
         "postponed_matches":
             buckets["postponed"],
 
@@ -631,9 +647,9 @@ def fetch_live_page(offset=0):
     }
 
 
-# ============================================================
-# HOME
-# ============================================================
+# =========================================================
+# ROTAS
+# =========================================================
 
 @app.route("/")
 def home():
@@ -641,17 +657,14 @@ def home():
     return jsonify({
         "bot": "BetScope Bot",
         "status": "online",
-        "version": "2.3",
+        "version": "2.4",
         "sports_api_key":
             "configurada"
             if SPORTS_API_KEY
-            else "não configurada"
+            else "não configurada",
+        "date_utc": today_utc()
     })
 
-
-# ============================================================
-# HEALTH
-# ============================================================
 
 @app.route("/health")
 def health():
@@ -659,36 +672,23 @@ def health():
     return jsonify({
         "bot": "BetScope Bot",
         "status": "ok",
-        "version": "2.3"
+        "version": "2.4"
     })
 
 
-# ============================================================
-# LIVE
-# ============================================================
+# =========================================================
+# LIVE PRINCIPAL
+# =========================================================
 
 @app.route("/api/live")
 def live_games():
 
-    global live_cache
-
     try:
 
-        result = fetch_live_page(0)
-
-        live_cache = {
-            "matches":
-                result["matches"],
-
-            "timestamp":
-                int(time.time() * 1000),
-
-            "offset":
-                0
-        }
+        result = fetch_live_today(0)
 
         return jsonify({
-            "cached": False,
+            "status": "ok",
             **result,
             "timestamp":
                 int(time.time() * 1000)
@@ -697,14 +697,9 @@ def live_games():
     except requests.exceptions.Timeout:
 
         return jsonify({
-            "cached": True,
             "status": "timeout",
             "error":
-                "SportsAPI não respondeu dentro do limite.",
-            "matches":
-                live_cache["matches"],
-            "cache_timestamp":
-                live_cache["timestamp"]
+                "SportsAPI não respondeu dentro de 8 segundos."
         }), 200
 
     except requests.exceptions.HTTPError as error:
@@ -716,30 +711,23 @@ def live_games():
         )
 
         return jsonify({
-            "cached": True,
             "status": "sports_api_error",
-            "sports_api_status":
-                api_status,
-            "matches":
-                live_cache["matches"],
-            "cache_timestamp":
-                live_cache["timestamp"]
+            "sports_api_status": api_status,
+            "error":
+                "Erro ao consultar jogos ao vivo."
         }), 200
 
     except Exception as error:
 
         return jsonify({
-            "cached": True,
             "status": "error",
-            "error": str(error),
-            "matches":
-                live_cache["matches"]
+            "error": str(error)
         }), 200
 
 
-# ============================================================
-# DEBUG
-# ============================================================
+# =========================================================
+# DEBUG LIVE
+# =========================================================
 
 @app.route("/api/debug/live")
 def debug_live():
@@ -764,7 +752,7 @@ def debug_live():
             offset // PAGE_LIMIT
         ) * PAGE_LIMIT
 
-        result = fetch_live_page(offset)
+        result = fetch_live_today(offset)
 
         next_offset = (
             offset + PAGE_LIMIT
@@ -776,10 +764,11 @@ def debug_live():
 
         has_next = True
 
-        if source_total is not None:
-
-            if next_offset >= source_total:
-                has_next = False
+        if (
+            source_total is not None
+            and next_offset >= source_total
+        ):
+            has_next = False
 
         if result["received"] < PAGE_LIMIT:
             has_next = False
@@ -810,14 +799,9 @@ def debug_live():
         )
 
         return jsonify({
-            "status":
-                "sports_api_error",
-
-            "sports_api_status":
-                api_status,
-
-            "error":
-                str(error)
+            "status": "sports_api_error",
+            "sports_api_status": api_status,
+            "error": str(error)
         }), 200
 
     except Exception as error:
@@ -828,9 +812,9 @@ def debug_live():
         }), 200
 
 
-# ============================================================
+# =========================================================
 # DETALHES DA PARTIDA
-# ============================================================
+# =========================================================
 
 @app.route("/api/match/<match_id>")
 def match_details(match_id):
@@ -863,12 +847,8 @@ def match_details(match_id):
         )
 
         return jsonify({
-            "status":
-                "sports_api_error",
-
-            "sports_api_status":
-                api_status,
-
+            "status": "sports_api_error",
+            "sports_api_status": api_status,
             "error":
                 "Erro ao consultar detalhes da partida."
         }), 200
@@ -881,9 +861,9 @@ def match_details(match_id):
         }), 200
 
 
-# ============================================================
+# =========================================================
 # START
-# ============================================================
+# =========================================================
 
 if __name__ == "__main__":
 
